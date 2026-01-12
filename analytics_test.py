@@ -23,6 +23,11 @@ def parse_raw_data(file_path):
             r"'content':\s*'(.*?)',\s*'mentions'", block, re.DOTALL)
         content = content_match.group(1) if content_match else ""
 
+        # --- ОЧИСТКА ВІД ТЕГІВ ---
+        # Видаляємо конструкції типу <@&12345...> або <@12345...> та пробіли після них
+        if content:
+            content = re.sub(r'<@&?\d+>\s*', '', content)
+
         author_match = re.search(r"'username':\s*'(.*?)'", block)
         author = author_match.group(1) if author_match else "Unknown"
 
@@ -32,8 +37,7 @@ def parse_raw_data(file_path):
         # Перевірка на наявність треду
         thread_match = re.search(
             r"'thread':\s*\{.*?'name':\s*'(.*?)'", block, re.DOTALL)
-        thread_name = thread_match.group(
-            1) if thread_match else None  # None якщо треду немає
+        thread_name = thread_match.group(1) if thread_match else None
 
         # Перевірка на реакції (Done/Resolved)
         is_resolved = False
@@ -47,7 +51,6 @@ def parse_raw_data(file_path):
         if is_resolved:
             occurrence = "Resolved"
         elif thread_name:
-            # Якщо є тред, значить сапорт там відповідає
             occurrence = "In Thread"
         else:
             occurrence = "Pending"
@@ -66,7 +69,7 @@ def parse_raw_data(file_path):
 def analyze_message_content(content, author):
     content_lower = content.lower()
 
-    # --- 1. ACTION ---
+    # --- 1. ACTION (Визначення дії) ---
     actions_map = {
         'add': 'Add', 'remove': 'Remove', 'delete': 'Remove',
         'check': 'Check', 'test': 'Test', 'block': 'Block',
@@ -81,18 +84,22 @@ def analyze_message_content(content, author):
             action = val
             break
 
-    # --- 2. OBJECT ---
+    # --- СПЕЦІАЛЬНЕ ПРАВИЛО ДЛЯ SS7 ---
+    if 'ss7' in content_lower:
+        action = "Testing"
+
+    # --- 2. OBJECT (Визначення об'єкта) ---
     obj = "N/A"
 
     has_email = bool(re.search(r'[\w.+-]+@[\w-]+\.[\w.-]+', content))
     has_phone = bool(re.search(r'\b\d{7,}\b', content))
 
-    # Спец. правило для Support Maintenance
+    # 2.1 Спец. правило для Support Maintenance
     if author in SUPPORT_TEAM and ('maintenance' in content_lower or 'notification' in content_lower):
         action = "Maintenance Notification"
         obj = "Ticket"
 
-    # Правила визначення об'єкта
+    # 2.2 Жорсткі правила для об'єктів
     elif action == 'Add' and has_email:
         obj = "Email"
     elif action in ['Send', 'Check'] and 'tt' not in content_lower and 'ticket' not in content_lower:
@@ -112,7 +119,7 @@ def analyze_message_content(content, author):
     elif has_phone and obj == "N/A":
         obj = "Phone Number"
 
-    # Спроба знайти ім'я партнера
+    # 2.3 Пошук країни/партнера
     if obj == "N/A":
         match_context = re.search(
             r'\b(for|on|to|with|about)\s+([a-zA-Z0-9\s]+?)(?:\s+email|\s+route|\s+sim|\n|$)', content, re.IGNORECASE)
@@ -121,9 +128,11 @@ def analyze_message_content(content, author):
             if candidate.lower() not in ['me', 'us', 'all', 'samples']:
                 obj = candidate
 
+        # Fallback
         if obj == "N/A" and len(content) < 30:
             obj = content.split('-')[0].strip()
 
+    # 2.4 Якщо все ще N/A і це сапорт
     if obj == "N/A" and author in SUPPORT_TEAM:
         obj = "General Support"
 
@@ -135,13 +144,15 @@ def analyze_message_content(content, author):
     elif action == "Maintenance Notification":
         case_str = "Notification"
     else:
-        # Розширений список кейсів
+        # Уніфікація кейсів
         if 'fake' in content_lower:
             case_str = "Fake"
         elif 'dlr' in content_lower:
             case_str = "DLR"
         elif 'tt' in content_lower or 'ticket' in content_lower:
             case_str = "Ticket"
+        elif 'ss7' in content_lower:
+            case_str = "SS7"
         elif 'route' in content_lower:
             case_str = "Route"
         elif 'rate' in content_lower or 'price' in content_lower or 'cost' in content_lower:
@@ -150,8 +161,6 @@ def analyze_message_content(content, author):
             case_str = "Spam/Block"
         elif 'sim' in content_lower:
             case_str = "SIM"
-        elif 'ss7' in content_lower:
-            case_str = "SS7"
         elif 'prefix' in content_lower:
             case_str = "Prefix"
         elif 'sender' in content_lower:
@@ -165,7 +174,7 @@ def analyze_message_content(content, author):
         elif 'test' in content_lower:
             case_str = "Testing"
 
-        # Евристика: якщо кейс ще General, але дія Check -> можливо Quality
+        # Уточнення для Check -> Quality
         if case_str == "General Request" and action == "Check":
             case_str = "Quality Check"
 
@@ -190,13 +199,12 @@ try:
             'Object': obj,
             'Case': case,
             'Following request (Thread Context)': msg['thread_name'],
-            # Тепер тут буде 'In Thread', якщо є гілка
             'Occurrence (Status)': msg['occurrence'],
             'Original Message': msg['content'][:100] + '...'
         })
 
     df = pd.DataFrame(rows)
-    output_filename = 'discord_analytics_advanced.csv'
+    output_filename = 'discord_analytics_clean_v6.csv'
     df.to_csv(output_filename, index=False, quoting=csv.QUOTE_ALL)
     print(f"Готово! Файл збережено як {output_filename}")
 
